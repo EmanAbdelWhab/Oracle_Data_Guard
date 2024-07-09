@@ -1,0 +1,639 @@
+1. database must be in archivelog mode
+==============================================================================================================
+
+SELECT log_mode FROM v$database;
+
+LOG_MODE
+------------
+NOARCHIVELOG
+
+If it is noarchivelog mode, switch is to archivelog mode.
+
+SHUTDOWN IMMEDIATE;
+STARTUP MOUNT;
+ALTER DATABASE ARCHIVELOG;
+ALTER DATABASE OPEN;
+
+2. Check force logging and archive mode on the primary to enable them.
+=============================================================================================================================
+=============================================================================================================================
+
+SQL> select force_logging from v$database ;
+NO
+
+SQL> alter database force logging ;
+
+Database altered.
+
+SQL> select force_logging from v$database ;
+YES
+
+SQL> select sum(bytes)/1024/1024/1024 size_in_gb from dba_data_files;
+SIZE_IN_GB
+
+3. Initialization Parameters
+==================================================================================================================
+Check the setting for the DB_NAME and DB_UNIQUE_NAME parameters. In this case they are both set to "DB11G" on the primary database.
+
+SQL> show parameter db_name
+
+NAME                                 TYPE        VALUE
+------------------------------------ ----------- ------------------------------
+db_name                              string      gg
+
+
+SQL> show parameter db_unique_name
+
+NAME                                 TYPE        VALUE
+------------------------------------ ----------- ------------------------------
+db_unique_name                       string      gg
+
+SQL>
+
+
+4. AT DR set the envirement at two nodes 
+========================================
+noode1:
+export ORACLE_SID=gracdr1
+export ORACLE_HOME=/u01/app/oracle/product/19.0.0/db_1
+export PATH=$ORACLE_HOME/bin:$PATH
+
+
+node2:
+export ORACLE_SID=gracdr2
+export ORACLE_HOME=/u01/app/oracle/product/19.0.0.0/dbhome_1
+export PATH=$ORACLE_HOME/bin:$PATH
+
+5. Add the TNS entries for both Praimary and Standby in the tnsnames.ora for both servers primary and standby.
+=============================================================================================================================
+
+========================
+on all nodes prim and stby 
+========================
+#Primary
+vi $ORACLE_HOME/network/admin/tnsnames.ora
+
+GG =
+  (DESCRIPTION =
+    (ADDRESS = (PROTOCOL = TCP)(HOST = grac-scan.ictmisr.net)(PORT = 1521))
+    (CONNECT_DATA =
+      (SERVER = DEDICATED)
+      (SERVICE_NAME = gg.ictmisr.net)
+    )
+  )
+
+gracdr =
+  (DESCRIPTION =
+    (ADDRESS = (PROTOCOL = TCP)(HOST =193.168.10.96)(PORT = 1521))
+    (CONNECT_DATA =
+      (SERVER = DEDICATED)
+      (SERVICE_NAME = gracdr)
+      (UR = A)
+    )
+  )
+###############################################
+
+#standby
+GG =
+  (DESCRIPTION =
+    (ADDRESS = (PROTOCOL = TCP)(HOST =193.168.10.89 )(PORT = 1521))
+    (CONNECT_DATA =
+      (SERVER = DEDICATED)
+      (SERVICE_NAME = gg.ictmisr.net)
+    )
+  )
+
+
+gracdr =
+  (DESCRIPTION =
+    (ADDRESS = (PROTOCOL = TCP)(HOST =gracdr-scan.ictmisr.net)(PORT = 1521))
+    (CONNECT_DATA =
+      (SERVER = DEDICATED)
+      (SERVICE_NAME = gracdr)
+      (UR = A)
+    )
+  )
+
+tnsping 
+
+6. Add entry for static registration in the listner.ora for the standby to the DB/one instance in the RAC to be able to connect to ideal instance during Duplicate and reload the listener.
+=============================================================================================================================================================================
+=============================================================================================================================================================================
+
+On the STANDBY
+
+[grid@gracdr1 ~]$ cd $ORACLE_HOME/network/admin
+[grid@gracdr1 admin]$ vi listener.ora                                                 
+
+SID_LIST_LISTENER =
+  (SID_LIST =
+    (SID_DESC =
+      (GLOBAL_DBNAME = gracdr)
+      (SID_NAME = gracdr1)
+      (ORACLE_HOME = /u01/app/oracle/product/19.0.0/db_1)
+    )
+  )  
+
+[grid@gracdr admin]$ lsnrctl reload
+
+7. configure password file 
+===============================
+
+-to get the password file location at primary 
+
+from primary:
+
+set lines 500 pages 500
+col FILE_NAME format a90
+col username format a30
+select * from v$passwordfile_info;
+
+copy password file form primary to dr :
+
+asmcmd>pwcopy +DATA/GG/PASSWORD/pwdgg.256.1171212569 /tmp/orapwgracdr.ora
+
+scp /tmp/orapwgracdr.ora oracle@193.168.10.94:/tmp/
+
+
+at dr using grid 
+ASMCMD> pwcopy /tmp/orapwgracdr.ora +DATA/GRACDR/PASSWORD/orapwgracdr.ora
+copying /tmp/orapwracdr.ora -> +DATA/GRACDR/PASSWORD/orapwracdr.ora
+ASMCMD> ls
+CONTROLFILE/
+DATAFILE/
+PARAMETERFILE/
+PASSWORD/
+ASMCMD> cd PASSWORD/
+ASMCMD> ls
+orapwracdr.ora
+
+cp /tmp/orapwgracdr.ora /u01/app/oracle/product/19.0.0/db_1/dbs/orapwgracdr1
+
+8. Check the connectivity tnsping and sqlplus from both sides primary and standby for both DB.
+=============================================================================================================================
+=============================================================================================================================
+ 
+tnsping gg
+tnsping gracdr
+sqlplus sys/sys@gg as sysdba
+sqlplus sys/sys@gracdr as sysdba
+
+
+select name, value from v$parameter
+where name in ('db_name','db_unique_name','log_archive_config', 'log_archive_dest_1','log_archive_dest_2','log_archive_dest_3','log_archive_dest_4',
+               'log_archive_dest_state_1','log_archive_dest_state_2','log_archive_dest_state_3','log_archive_dest_state_4','log_archive_dest_state_3','log_archive_dest_state_4', 'remote_login_passwordfile',
+               'log_archive_format','log_archive_max_processes','fal_server','fal_client','db_file_name_convert',
+                     'log_file_name_convert', 'standby_file_management');
+
+NAME
+--------------------------------------------------------------------------------
+VALUE
+--------------------------------------------------------------------------------
+db_file_name_convert
+
+
+log_file_name_convert
+
+
+log_archive_dest_1
+
+
+
+NAME
+--------------------------------------------------------------------------------
+VALUE
+--------------------------------------------------------------------------------
+log_archive_dest_2
+
+
+log_archive_dest_3
+
+
+log_archive_dest_4
+
+
+
+NAME
+--------------------------------------------------------------------------------
+VALUE
+--------------------------------------------------------------------------------
+log_archive_dest_state_1
+enable
+
+log_archive_dest_state_2
+enable
+
+log_archive_dest_state_3
+enable
+
+
+NAME
+--------------------------------------------------------------------------------
+VALUE
+--------------------------------------------------------------------------------
+log_archive_dest_state_4
+enable
+
+fal_client
+
+
+fal_server
+
+
+
+NAME
+--------------------------------------------------------------------------------
+VALUE
+--------------------------------------------------------------------------------
+log_archive_config
+
+
+log_archive_format
+%t_%s_%r.dbf
+
+log_archive_max_processes
+4
+
+
+NAME
+--------------------------------------------------------------------------------
+VALUE
+--------------------------------------------------------------------------------
+standby_file_management
+MANUAL
+
+remote_login_passwordfile
+EXCLUSIVE
+
+db_name
+gg
+
+
+NAME
+--------------------------------------------------------------------------------
+VALUE
+--------------------------------------------------------------------------------
+db_unique_name
+gg
+
+9. Set the initialization parameters on the primary and double check them for the changing.
+=============================================================================================================================
+=============================================================================================================================
+#Primary
+alter system set LOG_ARCHIVE_CONFIG='DG_CONFIG=(gg,gracdr)' scope=both sid='*';
+alter system set LOG_ARCHIVE_DEST_1='LOCATION=USE_DB_RECOVERY_FILE_DEST VALID_FOR=(ALL_LOGFILES,ALL_ROLES) DB_UNIQUE_NAME=gg' scope=both sid='*';
+alter system set LOG_ARCHIVE_DEST_2='SERVICE=gracdr ARCH VALID_FOR=(ONLINE_LOGFILES,PRIMARY_ROLE) DB_UNIQUE_NAME=gracdr' scope=both sid='*';
+alter system set fal_server=gracdr scope=both sid='*';
+alter system set fal_client=gg scope=both sid='*';
+alter system set standby_file_management=AUTO scope=both sid='*';
+alter system set DB_FILE_NAME_CONVERT='gracdr','gg' SID='*' scope=spfile;
+alter system set LOG_FILE_NAME_CONVERT='gracdr','gg' SID='*' scope=spfile;
+ALTER SYSTEM SET LOG_ARCHIVE_DEST_STATE_2=DEFER scope=both sid='*';
+
+#alter system set standby_file_management=manual scope=both sid='*';
+
+#ALTER SYSTEM SET LOG_ARCHIVE_DEST_STATE_2=ENABLE scope=both sid='*';
+
+
+set linesize 500 pages 0
+col value for a90
+col name for a50
+
+select name, value from v$parameter
+where name in ('db_name','db_unique_name','log_archive_config', 'log_archive_dest_1','log_archive_dest_2','log_archive_dest_3','log_archive_dest_4',
+               'log_archive_dest_state_1','log_archive_dest_state_2','log_archive_dest_state_3','log_archive_dest_state_4','log_archive_dest_state_3','log_archive_dest_state_4', 'remote_login_passwordfile',
+               'log_archive_format','log_archive_max_processes','fal_server','fal_client','db_file_name_convert',
+                     'log_file_name_convert', 'standby_file_management');
+
+==============================================
+#standby
+10 .Create pfile from spfile and edit the needed parameter such as db_unique_name.
+=============================================================================================================================
+=============================================================================================================================
+*.db_name='gg'
+*.db_unique_name='gracdr'
+
+
+11. Create the Standby Redo Logs (SRLs) on Primary and Standby (maximum # of logfiles +1) * maximum # of threads
+=============================================================================================================================
+=============================================================================================================================
+
+select GROUP#,THREAD#,SEQUENCE#,ARCHIVED,STATUS,BYTES/1024/1024 as "SIZE IN M" from v$log;
+SQL> select GROUP#,THREAD#,BYTES/1024/1024 as "SIZE IN M" from v$log;
+
+
+    GROUP#    THREAD#  SEQUENCE# ARC STATUS            SIZE IN M
+---------- ---------- ---------- --- ---------------- ----------
+         1          1         19 YES INACTIVE                200
+         2          1         20 NO  CURRENT                 200
+         3          2         13 YES INACTIVE                200
+         4          2         14 NO  CURRENT                 200
+
+
+alter database add standby logfile thread 1 group 5 size 200M;
+alter database add standby logfile thread 1 group 6 size 200M;
+alter database add standby logfile thread 1 group 7 size  200M;
+alter database add standby logfile thread 1 group 8 size  200M;
+alter database add standby logfile thread 1 group 9 size  200M;
+alter database add standby logfile thread 2 group 10 size 200M;
+alter database add standby logfile thread 2 group 11 size 200M;
+alter database add standby logfile thread 2 group 12 size 200M;
+alter database add standby logfile thread 2 group 13 size 200M;
+alter database add standby logfile thread 2 group 14 size 200M;
+
+set lines 200 pages 5000
+
+SELECT group#, dbid, thread#, bytes/1024/1024, sequence#, status FROM v$standby_log;
+
+    GROUP# DBID                                        THREAD# BYTES/1024/1024  SEQUENCE# STATUS
+---------- ---------------------------------------- ---------- --------------- ---------- ----------
+         5 UNASSIGNED                                        1             200          0 UNASSIGNED
+         6 UNASSIGNED                                        1             200          0 UNASSIGNED
+         7 UNASSIGNED                                        1             200          0 UNASSIGNED
+         8 UNASSIGNED                                        1             200          0 UNASSIGNED
+         9 UNASSIGNED                                        1             200          0 UNASSIGNED
+        10 UNASSIGNED                                        2             200          0 UNASSIGNED
+        11 UNASSIGNED                                        2             200          0 UNASSIGNED
+        12 UNASSIGNED                                        2             200          0 UNASSIGNED
+        13 UNASSIGNED                                        2             200          0 UNASSIGNED
+        14 UNASSIGNED                                        2             200          0 UNASSIGNED
+
+set pages 200
+set lines 180
+col MEMBER for a60
+select group#, type, member from v$logfile order by 1;
+
+#primary
+set pages 200
+set lines 180
+col MEMBER for a60
+select group#, type, member from v$logfile order by 1;
+
+    GROUP# TYPE    MEMBER
+---------- ------- ------------------------------------------------------------
+         1 ONLINE  +FRA/GG/ONLINELOG/group_1.258.1171212749
+         1 ONLINE  +DATA/GG/ONLINELOG/group_1.263.1171212739
+         2 ONLINE  +FRA/GG/ONLINELOG/group_2.257.1171212749
+         2 ONLINE  +DATA/GG/ONLINELOG/group_2.262.1171212739
+         3 ONLINE  +DATA/GG/ONLINELOG/group_3.266.1171213513
+         3 ONLINE  +FRA/GG/ONLINELOG/group_3.259.1171213531
+         4 ONLINE  +DATA/GG/ONLINELOG/group_4.267.1171213555
+         4 ONLINE  +FRA/GG/ONLINELOG/group_4.260.1171213565
+
+12. Create the needed directories on standby ASM/filesystem
+=============================================================================================================================
+=============================================================================================================================
+cd +DATA
+mkdir gracdr
+cd 	  gracdr
+mkdir PARAMETERFILE DATAFILE CONTROLFILE TEMPFILE ONLINELOG BROKER PASSWORD
+
+cd +FRA
+mkdir GRACDR
+cd    GRACDR
+mkdir ARCHIVELOG CONTROLFILE ONLINELOG
+
+13. Create the necessary directories on the standby server.
+=============================================================================================================================
+=============================================================================================================================
+ mkdir -p /u01/app/oracle/oradata/gracdr
+ mkdir -p /u01/app/oracle/fast_recovery_area/gracdr
+ mkdir -p /u01/app/oracle/admin/gracdr/adump
+
+14- Start standby in nomount 
+=============================================================================================================================
+=============================================================================================================================
+
+echo $ORACLE_SID
+
+sqlplus / as sysdba
+
+startup nomount pfile='/tmp/pfile';
+
+
+15- Duplicate DB or Backup/Restore
+=============================================================================================================================
+=============================================================================================================================
+
+rman target sys/sys@gg auxiliary sys/sys@gracdr
+
+
+[oracle@gracdr1]$ vi  dup_gracdr.sql
+
+
+connect target sys/"sys"@gg
+connect  auxiliary sys/"sys"@gracdr
+run {
+allocate channel prmy1 type disk;
+allocate channel prmy2 type disk;
+allocate channel prmy3 type disk;
+allocate channel prmy4 type disk;
+allocate channel prmy5 type disk;
+allocate channel prmy6 type disk;
+allocate channel prmy7 type disk;
+allocate channel prmy8 type disk;
+allocate channel prmy9 type disk;
+allocate channel prmy10 type disk;
+allocate channel prmy11 type disk;
+allocate channel prmy12 type disk;
+allocate auxiliary channel stby1 type disk;
+allocate auxiliary channel stby2 type disk;
+allocate auxiliary channel stby3 type disk;
+allocate auxiliary channel stby4 type disk;
+allocate auxiliary channel stby5 type disk;
+allocate auxiliary channel stby6 type disk;
+allocate auxiliary channel stby7 type disk;
+allocate auxiliary channel stby8 type disk;
+allocate auxiliary channel stby9 type disk;
+allocate auxiliary channel stby10 type disk;
+allocate auxiliary channel stby11 type disk;
+allocate auxiliary channel stby12 type disk;
+
+duplicate target database
+for standby
+from active database
+dorecover
+  spfile
+    set db_unique_name='gracdr'
+    set control_files='+DATA/GRACDR/CONTROLFILE/current01.ctl','+FRA/GRACDR/CONTROLFILE/current02.ctl'
+    set log_archive_config='dg_config=(gg,gracdr)'
+    set audit_file_dest='/u01/app/oracle/admin/gracdr/adump'
+    set cluster_database='false'
+   nofilenamecheck;
+  }
+
+[oracle@gracdr1]$ nohup rman @dup_gracdr.sql log=dup_gracdr_from_DR.log &
+
+
+
+16- Checks and finalizing the configuration
+=============================================================================================================================
+=============================================================================================================================
+-- On the STANDBY
+
+SQL> select name, instance_name , open_mode, database_role from v$database, v$instance;
+
+
+NAME      INSTANCE_NAME    OPEN_MODE            DATABASE_ROLE
+--------- ---------------- -------------------- ----------------
+GG        gracdr1          MOUNTED              PHYSICAL STANDBY
+
+SQL> SELECT INST_ID, NAME DATAFILE FROM GV$DATAFILE;
+
+   INST_ID DATAFILE
+---------- --------------------------------------------------
+         1 +DATA/GRACDR/DATAFILE/system.258.1173795095
+         1 +DATA/GRACDR/DATAFILE/sysaux.259.1173795099
+         1 +DATA/GRACDR/DATAFILE/undotbs1.260.1173795101
+         1 +DATA/GRACDR/DATAFILE/undotbs2.261.1173795107
+         1 +DATA/GRACDR/DATAFILE/users.262.1173795109
+
+SELECT INST_ID,GROUP#,THREAD#,SEQUENCE#,ARCHIVED,STATUS FROM GV$STANDBY_LOG ORDER BY
+1,2,3;   2
+
+   INST_ID     GROUP#    THREAD#  SEQUENCE# ARC STATUS
+---------- ---------- ---------- ---------- --- ----------
+         1          5          1          0 YES UNASSIGNED
+         1          6          1          0 YES UNASSIGNED
+         1          7          1          0 YES UNASSIGNED
+         1          8          1          0 YES UNASSIGNED
+         1          9          1          0 YES UNASSIGNED
+         1         10          2          0 YES UNASSIGNED
+         1         11          2          0 YES UNASSIGNED
+         1         12          2          0 YES UNASSIGNED
+         1         13          2          0 YES UNASSIGNED
+         1         14          2          0 YES UNASSIGNED
+
+SQL> SELECT TYPE, count(*) FROM GV$LOGFILE GROUP BY TYPE;
+
+TYPE      COUNT(*)
+------- ----------
+ONLINE           8
+STANDBY         20
+
+ alter system reset log_archive_dest_2 scope=both sid='*';
+
+System altered.
+
+SQL> alter system reset log_archive_dest_1 scope=both sid='*';
+
+System altered.
+
+
+shutdown immediate
+ORA-01109: database not open
+
+
+Database dismounted.
+ORACLE instance shut down.
+SQL> startup mount pfile='/u01/app/oracle/product/19.0.0/db_1/dbs/initgracdr1.ora' ;
+ORACLE instance started.
+
+Total System Global Area 5033162888 bytes
+Fixed Size                  8906888 bytes
+Variable Size             905969664 bytes
+Database Buffers         4110417920 bytes
+Redo Buffers                7868416 bytes
+Database mounted.
+SQL> show parameter spfile
+
+NAME                                 TYPE        VALUE
+------------------------------------ ----------- ------------------------------
+spfile                               string
+SQL> create spfile='+DATA' from  pfile='/u01/app/oracle/product/19.0.0/db_1/dbs/initgracdr1.ora' ;
+
+File created.
+
+SQL> alter database recover managed standby database using current logfile disconnect ;
+     ALTER DATABASE recover managed standby database disconnect;
+
+Database altered.
+
+SQL> set lines 500 pages 500
+select process,status,thread#,sequence# from v$managed_standby order by 1;
+
+ON PRIMARY
+
+
+SQL> col ERROR format a15
+select dest_id,error,status,log_sequence,applied_scn from v$archive_dest where dest_id=2;
+
+SQL> alter system set log_archive_dest_state_2=enable sid='*' scope=both ;
+
+On STANDBY
+===========
+
+set lines 500 pages 500
+select process,status,thread#,sequence# from v$managed_standby order by 1;
+
+SELECT ARCH.THREAD# "Thread", ARCH.SEQUENCE# "Last Sequence Received", APPL.SEQUENCE# "Last Sequence Applied", (ARCH.SEQUENCE# - APPL.SEQUENCE#) "Difference"
+FROM
+(SELECT THREAD# ,SEQUENCE# FROM V$ARCHIVED_LOG WHERE (THREAD#,FIRST_TIME ) IN (SELECT THREAD#,MAX(FIRST_TIME) FROM V$ARCHIVED_LOG GROUP BY THREAD#)) ARCH,
+(SELECT THREAD# ,SEQUENCE# FROM V$LOG_HISTORY WHERE (THREAD#,FIRST_TIME ) IN (SELECT THREAD#,MAX(FIRST_TIME) FROM V$LOG_HISTORY GROUP BY THREAD#)) APPL
+WHERE
+ARCH.THREAD# = APPL.THREAD#
+ORDER BY 1;
+SQL> select sequence# from v$archived_log where applied='NO';
+select sequence# from v$archived_log where applied='NO' and thread#=2;
+select sequence# from v$archived_log where applied='YES' and sequence#=67953;
+
+17. register intstance at cluster 
+=============================================================================================================================
+=============================================================================================================================
+using oracle in dr
+srvctl add database -d gracdr  -o /u01/app/oracle/product/19.0.0/db_1 -r PHYSICAL_STANDBY -s mount
+srvctl add instance -d gracdr -i gracdr1 -n gracdr1
+srvctl add instance -d gracdr -i gracdr2 -n gracdr2
+srvctl modify database -d gracdr -p '+DATA/GRACDR/PARAMETERFILE/spfile.277.1173798259' 
+srvctl modify database -db gracdr -pwfile '+DATA/GRACDR/PASSWORD/orapwgracdr.ora'
+srvctl modify database -d gracdr -a "DATA,FRA"
+srvctl config database -d gracdr
+Database unique name: gracdr
+Database name:
+Oracle home: /u01/app/oracle/product/19.0.0/db_1
+Oracle user: oracle
+Spfile: +DATA/GRACDR/PARAMETERFILE/spfile.277.1173798259
+Password file: +DATA/GRACDR/PASSWORD/orapwgracdr.ora
+Domain: ictmisr.net
+Start options: mount
+Stop options: immediate
+Database role: PHYSICAL_STANDBY
+Management policy: AUTOMATIC
+Server pools:
+Disk Groups: DATA,FRA
+Mount point paths:
+Services:
+Type: RAC
+Start concurrency:
+Stop concurrency:
+OSDBA group: dba
+OSOPER group: oper
+Database instances: gracdr1,gracdr2
+Configured nodes: gracdr1,gracdr2
+CSS critical: no
+CPU count: 0
+Memory target: 0
+Maximum memory: 0
+Default network number for database services:
+Database is administrator managed
+
+startup nomount
+alter system set cluster_database=TRUE scope=spfile sid='*';
+shutdown immediate;
+
+srvctl status database -d gracdr
+srvctl start database -d gracdr -o mount
+srvctl stop database -d gracdr
+
+SQL> SELECT INSTANCE_NAME, STATUS, DATABASE_STATUS FROM V$INSTANCE;
+
+INSTANCE_NAME    STATUS       DATABASE_STATUS
+---------------- ------------ -----------------
+gracdr2          MOUNTED      ACTIVE
+
+SQL> select name,INST_ID,open_mode,database_role from gv$database ;
+NAME         INST_ID OPEN_MODE            DATABASE_ROLE
+--------- ---------- -------------------- ----------------
+GG                 1 MOUNTED              PHYSICAL STANDBY
+GG                 2 MOUNTED              PHYSICAL STANDBY
+
